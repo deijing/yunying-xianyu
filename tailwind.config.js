@@ -29,10 +29,20 @@ export default {
           '0%': { opacity: '0', transform: 'scale(0.96)' },
           '100%': { opacity: '1', transform: 'scale(1)' },
         },
+        'float': {
+          '0%, 100%': { transform: 'translateY(0)' },
+          '50%': { transform: 'translateY(-20px)' },
+        },
+        'pulse-slow': {
+          '0%, 100%': { opacity: '0.4' },
+          '50%': { opacity: '0.8' },
+        }
       },
       animation: {
         'fade-up': 'fade-up 0.5s cubic-bezier(0.2,0.7,0.2,1) both',
         'scale-in': 'scale-in 0.25s ease-out both',
+        'float': 'float 6s ease-in-out infinite',
+        'pulse-slow': 'pulse-slow 4s cubic-bezier(0.4, 0, 0.6, 1) infinite',
       },
     },
   },
