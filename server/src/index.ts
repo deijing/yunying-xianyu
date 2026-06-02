@@ -11,6 +11,50 @@ const PORT = process.env.PORT || 3001
 app.use(cors())
 app.use(express.json({ limit: '5mb' }))
 
+// ── 进程管理器 ──────────────────────────────────────────
+type Job = {
+  id: string
+  model: string
+  status: 'running' | 'done' | 'error'
+  startedAt: number
+  finishedAt?: number
+  duration?: number
+  messageSnippet: string
+  resultTitle?: string
+  errorMsg?: string
+}
+
+const jobs = new Map<string, Job>()
+const MAX_JOBS = 100
+
+function addJob(id: string, model: string, message: string) {
+  const job: Job = {
+    id,
+    model,
+    status: 'running',
+    startedAt: Date.now(),
+    messageSnippet: message.slice(0, 80).replace(/\n/g, ' '),
+  }
+  jobs.set(id, job)
+  // 清理旧记录
+  const keys = [...jobs.keys()]
+  if (keys.length > MAX_JOBS) {
+    for (const k of keys.slice(0, keys.length - MAX_JOBS)) jobs.delete(k)
+  }
+  return job
+}
+
+function finishJob(id: string, status: 'done' | 'error', resultTitle?: string, errorMsg?: string) {
+  const job = jobs.get(id)
+  if (!job) return
+  job.status = status
+  job.finishedAt = Date.now()
+  job.duration = job.finishedAt - job.startedAt
+  if (resultTitle) job.resultTitle = resultTitle
+  if (errorMsg) job.errorMsg = errorMsg
+}
+
+// ── System Prompt ───────────────────────────────────────
 const SYSTEM_PROMPT = `你是客户意图分析专家，专为 AI/知识付费教学场景做客户咨询消息分析。
 
 分析心法：
@@ -82,11 +126,34 @@ function extractJSON(raw: string): string {
   throw new Error('未找到 JSON 输出')
 }
 
+// ── API 路由 ────────────────────────────────────────────
+
 app.get('/api/health', (_req, res) => {
   res.json({ ok: true, claude: true })
 })
 
+// 进程列表
+app.get('/api/processes', (_req, res) => {
+  const list = [...jobs.values()]
+    .sort((a, b) => b.startedAt - a.startedAt)
+  res.json(list)
+})
+
+// 清除单个进程
+app.delete('/api/processes/:id', (req, res) => {
+  jobs.delete(req.params.id)
+  res.json({ ok: true })
+})
+
+// 清除全部进程
+app.delete('/api/processes', (_req, res) => {
+  jobs.clear()
+  res.json({ ok: true })
+})
+
 const MODELS = ['sonnet', 'opus', 'haiku'] as const
+
+let jobCounter = 0
 
 app.post('/api/analyze', (req, res) => {
   const { message, model } = req.body
@@ -94,6 +161,9 @@ app.post('/api/analyze', (req, res) => {
     return res.status(400).json({ error: '请提供 message 字段' })
   }
   const selectedModel = MODELS.includes(model) ? model : 'sonnet'
+
+  const jobId = `${Date.now()}-${++jobCounter}`
+  addJob(jobId, selectedModel, message)
 
   // SSE
   res.writeHead(200, {
@@ -108,12 +178,11 @@ app.post('/api/analyze', (req, res) => {
   }
 
   const prompt = buildPrompt(message)
-  console.log(`🤖 调用 Claude CLI → ${selectedModel}...`)
+  console.log(`🤖 [${jobId}] 调用 Claude CLI → ${selectedModel}...`)
 
-  send('status', { msg: `🔧 启动 ${selectedModel} 模型...` })
-  send('status', { msg: '⏳ 正在分析客户消息，首次调用约 30-60 秒...' })
+  send('status', { msg: `🔧 启动 ${selectedModel} 模型...`, jobId })
+  send('status', { msg: '⏳ 正在分析客户消息，约 30-60 秒...', jobId })
 
-  // 写入临时文件
   const tmpDir = join(tmpdir(), 'intent-hub')
   if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
   const promptFile = join(tmpDir, `prompt-${Date.now()}.txt`)
@@ -129,7 +198,7 @@ app.post('/api/analyze', (req, res) => {
       env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
     })
 
-    send('status', { msg: '📦 正在解析分析结果...' })
+    send('status', { msg: '📦 正在解析分析结果...', jobId })
     send('log', { text: stdout.slice(0, 3000) })
 
     const jsonStr = extractJSON(stdout)
@@ -138,22 +207,24 @@ app.post('/api/analyze', (req, res) => {
     const required = ['title', 'quickRead', 'script', 'intent']
     const missing = required.filter((k) => !report[k])
     if (missing.length) {
-      send('error', { msg: `JSON 缺少必要字段: ${missing.join(', ')}` })
+      finishJob(jobId, 'error', undefined, `JSON 缺少必要字段: ${missing.join(', ')}`)
+      send('error', { msg: `JSON 缺少必要字段: ${missing.join(', ')}`, jobId })
       return res.end()
     }
 
-    console.log('✅ 分析完成:', report.title)
-    send('done', { report })
+    finishJob(jobId, 'done', report.title)
+    console.log(`✅ [${jobId}] 分析完成:`, report.title)
+    send('done', { report, jobId })
   } catch (err: any) {
-    console.error('❌ 分析失败:', err.message)
+    console.error(`❌ [${jobId}] 分析失败:`, err.message)
     if (err.stdout) {
       send('log', { text: err.stdout.slice(0, 2000), stderr: true })
     }
-    if (err.killed || err.signal) {
-      send('error', { msg: '分析超时（超过 3 分钟），请尝试换用 haiku 模型或缩短客户消息。' })
-    } else {
-      send('error', { msg: `分析失败: ${err.message}` })
-    }
+    const msg = err.killed || err.signal
+      ? '分析超时（超过 3 分钟），请尝试换用 haiku 模型或缩短客户消息。'
+      : `分析失败: ${err.message}`
+    finishJob(jobId, 'error', undefined, msg)
+    send('error', { msg, jobId })
   }
   res.end()
 })
@@ -161,5 +232,5 @@ app.post('/api/analyze', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 意图分析服务启动: http://localhost:${PORT}`)
   console.log(`📡 POST /api/analyze (SSE)`)
-  console.log(`🩺 GET  /api/health`)
+  console.log(`📋 GET  /api/processes`)
 })

@@ -6,6 +6,7 @@ import { CustomerDetail } from '@/pages/CustomerDetail'
 import { ReportView } from '@/pages/ReportView'
 import { NewAnalysis } from '@/pages/NewAnalysis'
 import { Settings } from '@/pages/Settings'
+import { Xianyu } from '@/pages/Xianyu'
 
 export default function App() {
   return (
@@ -16,6 +17,7 @@ export default function App() {
         <Route path="/customers/:id" element={<CustomerDetail />} />
         <Route path="/reports/:id" element={<ReportView />} />
         <Route path="/new" element={<NewAnalysis />} />
+        <Route path="/xianyu" element={<Xianyu />} />
         <Route path="/settings" element={<Settings />} />
       </Routes>
     </AppLayout>

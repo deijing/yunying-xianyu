@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { NavLink, useLocation } from 'react-router-dom'
-import { LayoutDashboard, Users, FilePlus2, Settings, IdCard, Menu, X } from 'lucide-react'
+import { LayoutDashboard, Users, FilePlus2, Settings, IdCard, Menu, X, ShoppingBag } from 'lucide-react'
 import type { LucideIcon } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import type { ReactNode } from 'react'
@@ -11,6 +11,7 @@ const NAV: { to: string; label: string; en: string; icon: LucideIcon }[] = [
   { to: '/', label: '总览', en: 'Dashboard', icon: LayoutDashboard },
   { to: '/customers', label: '客户', en: 'Customers', icon: Users },
   { to: '/new', label: '新建分析', en: 'New Analysis', icon: FilePlus2 },
+  { to: '/xianyu', label: '闲鱼选品', en: 'Xianyu', icon: ShoppingBag },
   { to: '/settings', label: '设置', en: 'Settings', icon: Settings },
 ]
 
@@ -33,8 +34,8 @@ function NavItems({ onClick }: { onClick?: () => void }) {
           }
         >
           <n.icon className="size-[18px]" />
-          <span className="font-medium">{n.label}</span>
-          <span className="ml-auto text-[10px] uppercase tracking-wider text-subtle">{n.en}</span>
+          <span className="font-medium whitespace-nowrap">{n.label}</span>
+          <span className="ml-auto text-[10px] uppercase tracking-wider text-subtle whitespace-nowrap">{n.en}</span>
         </NavLink>
       ))}
     </nav>

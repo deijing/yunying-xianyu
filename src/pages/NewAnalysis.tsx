@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label'
 import { Select, SelectTrigger, SelectValue, SelectContent, SelectItem } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import { Reveal } from '@/components/common/Reveal'
+import { ProcessPanel } from '@/components/common/ProcessPanel'
 import type { IntentReport } from '@/types'
 
 type LogEntry = { text: string; stderr?: boolean }
@@ -28,6 +29,7 @@ export function NewAnalysis() {
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [done, setDone] = useState(false)
   const [progress, setProgress] = useState(0)
+  const [elapsed, setElapsed] = useState(0)
   const [model, setModel] = useState('sonnet')
   const logBoxRef = useRef<HTMLDivElement>(null)
 
@@ -49,6 +51,16 @@ export function NewAnalysis() {
       return () => clearTimeout(t)
     }
     return () => clearInterval(interval)
+  }, [loading])
+
+  // timer effect
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval>
+    if (loading) {
+      setElapsed(0)
+      timer = setInterval(() => setElapsed(prev => prev + 1), 1000)
+    }
+    return () => clearInterval(timer)
   }, [loading])
 
   // auto-scroll logs
@@ -225,7 +237,10 @@ export function NewAnalysis() {
                 <div className="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-inner">
                   <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/50 px-4 py-2.5">
                     <Terminal className="size-4 text-slate-400" />
-                    <span className="text-xs font-semibold text-slate-300">Agent 运行日志</span>
+                    <span className="text-xs font-semibold text-slate-300">
+                      Agent 运行日志
+                      {(loading || done) && <span className="ml-2 font-mono text-[10px] text-slate-500 font-normal">{elapsed}s</span>}
+                    </span>
                     {loading && <Loader2 className="ml-auto size-3.5 animate-spin text-brand" />}
                     {done && <CheckCircle2 className="ml-auto size-3.5 text-emerald-500" />}
                     {error && <XCircle className="ml-auto size-3.5 text-red-500" />}
@@ -338,6 +353,10 @@ export function NewAnalysis() {
             </Card>
           </Reveal>
         </div>
+
+        <Reveal delay={0.1}>
+          <ProcessPanel />
+        </Reveal>
       </div>
     </div>
   )
