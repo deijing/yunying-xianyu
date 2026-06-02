@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>意图管理系统 · Intent Hub</title>
+    <script>
+      // 防闪烁：React 加载前按存储/时间先定主题
+      (function () {
+        try {
+          var m = localStorage.getItem('intent-hub-theme') || 'auto'
+          var h = new Date().getHours()
+          var night = h < 6 || h >= 18
+          var dark = m === 'dark' || (m === 'auto' && night)
+          if (dark) document.documentElement.classList.add('dark')
+        } catch (e) {}
+      })()
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
