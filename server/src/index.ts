@@ -1,6 +1,9 @@
 import express from 'express'
 import cors from 'cors'
-import { spawn } from 'child_process'
+import { execSync } from 'child_process'
+import { writeFileSync, mkdirSync, existsSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -108,61 +111,51 @@ app.post('/api/analyze', (req, res) => {
   console.log(`🤖 调用 Claude CLI → ${selectedModel}...`)
 
   send('status', { msg: `🔧 启动 ${selectedModel} 模型...` })
+  send('status', { msg: '⏳ 正在分析客户消息，首次调用约 30-60 秒...' })
 
-  const child = spawn('claude', ['-p', '--bare', '--dangerously-skip-permissions', '--model', selectedModel], {
-    stdio: ['pipe', 'pipe', 'pipe'],
-    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
-  })
+  // 写入临时文件
+  const tmpDir = join(tmpdir(), 'intent-hub')
+  if (!existsSync(tmpDir)) mkdirSync(tmpDir, { recursive: true })
+  const promptFile = join(tmpDir, `prompt-${Date.now()}.txt`)
+  writeFileSync(promptFile, prompt, 'utf-8')
 
-  child.stdin!.write(prompt)
-  child.stdin!.end()
+  const cmd = `cat "${promptFile}" | claude -p --dangerously-skip-permissions --model ${selectedModel}`
 
-  let fullOutput = ''
+  try {
+    const stdout = execSync(cmd, {
+      encoding: 'utf-8',
+      timeout: 180_000,
+      maxBuffer: 10 * 1024 * 1024,
+      env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+    })
 
-  child.stdout.on('data', (chunk: Buffer) => {
-    const text = chunk.toString('utf-8')
-    fullOutput += text
-    send('log', { text })
-  })
+    send('status', { msg: '📦 正在解析分析结果...' })
+    send('log', { text: stdout.slice(0, 3000) })
 
-  child.stderr.on('data', (chunk: Buffer) => {
-    const text = chunk.toString('utf-8')
-    if (text.trim()) send('log', { text, stderr: true })
-  })
+    const jsonStr = extractJSON(stdout)
+    const report = JSON.parse(jsonStr)
 
-  child.on('error', (err) => {
-    console.error('❌ 进程启动失败:', err.message)
-    send('error', { msg: `进程启动失败: ${err.message}` })
-    res.end()
-  })
-
-  child.on('close', (code) => {
-    console.log(`Claude CLI 退出码: ${code}`)
-    if (code !== 0) {
-      send('error', { msg: `Agent 异常退出（退出码 ${code}）` })
+    const required = ['title', 'quickRead', 'script', 'intent']
+    const missing = required.filter((k) => !report[k])
+    if (missing.length) {
+      send('error', { msg: `JSON 缺少必要字段: ${missing.join(', ')}` })
       return res.end()
     }
 
-    send('status', { msg: '📦 正在解析分析结果...' })
-
-    try {
-      const jsonStr = extractJSON(fullOutput)
-      const report = JSON.parse(jsonStr)
-
-      const required = ['title', 'quickRead', 'script', 'intent']
-      const missing = required.filter((k) => !report[k])
-      if (missing.length) {
-        send('error', { msg: `JSON 缺少必要字段: ${missing.join(', ')}` })
-        return res.end()
-      }
-
-      console.log('✅ 分析完成:', report.title)
-      send('done', { report })
-    } catch (e: any) {
-      send('error', { msg: `JSON 解析失败: ${e.message}` })
+    console.log('✅ 分析完成:', report.title)
+    send('done', { report })
+  } catch (err: any) {
+    console.error('❌ 分析失败:', err.message)
+    if (err.stdout) {
+      send('log', { text: err.stdout.slice(0, 2000), stderr: true })
     }
-    res.end()
-  })
+    if (err.killed || err.signal) {
+      send('error', { msg: '分析超时（超过 3 分钟），请尝试换用 haiku 模型或缩短客户消息。' })
+    } else {
+      send('error', { msg: `分析失败: ${err.message}` })
+    }
+  }
+  res.end()
 })
 
 app.listen(PORT, () => {
