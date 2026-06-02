@@ -1,22 +1,22 @@
 import express from 'express'
 import cors from 'cors'
-import { execSync } from 'child_process'
+import { spawn } from 'child_process'
 import { readFileSync } from 'fs'
-import { resolve, dirname } from 'path'
-import { fileURLToPath } from 'url'
+import { resolve } from 'path'
+import { homedir } from 'os'
 
-const __dirname = dirname(fileURLToPath(import.meta.url))
 const app = express()
 const PORT = process.env.PORT || 3001
 
 app.use(cors())
-app.use(express.json())
+app.use(express.json({ limit: '5mb' }))
 
-const SKILL_PATH = resolve(__dirname, '../../../../.claude/skills/customer-intent-analyzer/SKILL.md')
+const SKILL_PATH = resolve(homedir(), '.claude/skills/customer-intent-analyzer/SKILL.md')
 let SKILL_PROMPT = ''
 
 try {
   SKILL_PROMPT = readFileSync(SKILL_PATH, 'utf-8')
+  console.log(`📖 已加载 skill: ${SKILL_PATH}`)
 } catch {
   console.warn('⚠️  SKILL.md 未找到，使用内置回退 prompt')
   SKILL_PROMPT = `你是客户意图分析专家。请分析客户消息并输出 JSON 格式的 IntentReport。`
@@ -46,7 +46,6 @@ function buildPrompt(message: string): string {
 """
 ${message}
 """`
-
 }
 
 function extractJSON(raw: string): string {
@@ -60,46 +59,91 @@ function extractJSON(raw: string): string {
   throw new Error('未找到 JSON 输出')
 }
 
+app.get('/api/health', (_req, res) => {
+  res.json({ ok: true, claude: true })
+})
+
 app.post('/api/analyze', (req, res) => {
   const { message } = req.body
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: '请提供 message 字段' })
   }
 
-  try {
-    const prompt = buildPrompt(message)
-    console.log('🤖 正在调用 Claude CLI 分析客户消息...')
+  // SSE
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'X-Accel-Buffering': 'no',
+  })
 
-    const stdout = execSync('claude -p --bare --dangerously-skip-permissions', {
-      input: prompt,
-      encoding: 'utf-8',
-      timeout: 120_000,
-      maxBuffer: 10 * 1024 * 1024,
-    })
-
-    const jsonStr = extractJSON(stdout)
-    const report = JSON.parse(jsonStr)
-    console.log('✅ 分析完成')
-
-    return res.json({ success: true, report })
-  } catch (err: any) {
-    console.error('❌ 分析失败:', err.message)
-    if (err.stdout) {
-      try {
-        const jsonStr = extractJSON(err.stdout)
-        const report = JSON.parse(jsonStr)
-        return res.json({ success: true, report })
-      } catch { /* fallback parse failed too */ }
-    }
-    return res.status(500).json({
-      error: '分析失败',
-      detail: err.message,
-      stdout: err.stdout?.slice(0, 2000),
-    })
+  const send = (type: string, data: unknown) => {
+    res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`)
   }
+
+  const prompt = buildPrompt(message)
+  console.log('🤖 正在调用 Claude CLI 分析客户消息...')
+
+  send('status', { msg: '🔧 正在启动本地 Agent...' })
+
+  const child = spawn('claude', ['-p', '--bare', '--dangerously-skip-permissions'], {
+    stdio: ['pipe', 'pipe', 'pipe'],
+    env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
+  })
+
+  child.stdin!.write(prompt)
+  child.stdin!.end()
+
+  let fullOutput = ''
+
+  child.stdout.on('data', (chunk: Buffer) => {
+    const text = chunk.toString('utf-8')
+    fullOutput += text
+    send('log', { text })
+  })
+
+  child.stderr.on('data', (chunk: Buffer) => {
+    const text = chunk.toString('utf-8')
+    if (text.trim()) send('log', { text, stderr: true })
+  })
+
+  child.on('error', (err) => {
+    console.error('❌ 进程启动失败:', err.message)
+    send('error', { msg: `进程启动失败: ${err.message}` })
+    res.end()
+  })
+
+  child.on('close', (code) => {
+    console.log(`Claude CLI 退出码: ${code}`)
+    if (code !== 0) {
+      send('error', { msg: `Agent 异常退出（退出码 ${code}）` })
+      return res.end()
+    }
+
+    send('status', { msg: '📦 正在解析分析结果...' })
+
+    try {
+      const jsonStr = extractJSON(fullOutput)
+      const report = JSON.parse(jsonStr)
+
+      const required = ['title', 'quickRead', 'script', 'intent']
+      const missing = required.filter((k) => !report[k])
+      if (missing.length) {
+        send('error', { msg: `JSON 缺少必要字段: ${missing.join(', ')}` })
+        return res.end()
+      }
+
+      console.log('✅ 分析完成:', report.title)
+      send('done', { report })
+    } catch (e: any) {
+      send('error', { msg: `JSON 解析失败: ${e.message}` })
+    }
+    res.end()
+  })
 })
 
 app.listen(PORT, () => {
   console.log(`🚀 意图分析服务启动: http://localhost:${PORT}`)
-  console.log(`📡 POST /api/analyze`)
+  console.log(`📡 POST /api/analyze (SSE)`)
+  console.log(`🩺 GET  /api/health`)
 })
