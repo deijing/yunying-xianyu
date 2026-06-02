@@ -27,7 +27,29 @@ export function NewAnalysis() {
   const [statusLine, setStatusLine] = useState('')
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [done, setDone] = useState(false)
+  const [progress, setProgress] = useState(0)
+  const [model, setModel] = useState('sonnet')
   const logBoxRef = useRef<HTMLDivElement>(null)
+
+  // progress bar effect
+  useEffect(() => {
+    let interval: ReturnType<typeof setInterval>
+    if (loading) {
+      setProgress(0)
+      interval = setInterval(() => {
+        setProgress(p => {
+          if (p >= 95) return p
+          const step = Math.random() * 8
+          return Math.min(p + step, 95)
+        })
+      }, 500)
+    } else {
+      setProgress(100)
+      const t = setTimeout(() => setProgress(0), 600)
+      return () => clearTimeout(t)
+    }
+    return () => clearInterval(interval)
+  }, [loading])
 
   // auto-scroll logs
   useEffect(() => {
@@ -101,7 +123,7 @@ export function NewAnalysis() {
       const res = await fetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg }),
+        body: JSON.stringify({ message: msg, model }),
       })
 
       if (!res.ok || !res.body) {
@@ -200,34 +222,34 @@ export function NewAnalysis() {
 
               {/* Log Panel */}
               {(loading || logs.length > 0 || done) && (
-                <div className="mt-4 overflow-hidden rounded-xl border border-line/60 bg-black/50 backdrop-blur-md">
-                  <div className="flex items-center gap-2 border-b border-line/30 px-4 py-2.5">
-                    <Terminal className="size-4 text-brand" />
-                    <span className="text-xs font-semibold text-muted">Agent 运行日志</span>
-                    {loading && <Loader2 className="ml-auto size-3.5 animate-spin text-brand/70" />}
-                    {done && <CheckCircle2 className="ml-auto size-3.5 text-emerald-400" />}
-                    {error && <XCircle className="ml-auto size-3.5 text-red-400" />}
+                <div className="mt-4 overflow-hidden rounded-xl border border-slate-800 bg-slate-950 shadow-inner">
+                  <div className="flex items-center gap-2 border-b border-slate-800 bg-slate-900/50 px-4 py-2.5">
+                    <Terminal className="size-4 text-slate-400" />
+                    <span className="text-xs font-semibold text-slate-300">Agent 运行日志</span>
+                    {loading && <Loader2 className="ml-auto size-3.5 animate-spin text-brand" />}
+                    {done && <CheckCircle2 className="ml-auto size-3.5 text-emerald-500" />}
+                    {error && <XCircle className="ml-auto size-3.5 text-red-500" />}
                   </div>
                   <div
                     ref={logBoxRef}
                     className="max-h-[220px] overflow-y-auto p-4 font-mono text-xs leading-relaxed"
                   >
                     {logs.length === 0 && loading && (
-                      <p className="text-muted/60 animate-pulse">{statusLine || '等待 Agent 响应...'}</p>
+                      <p className="text-slate-500 animate-pulse">{statusLine || '等待 Agent 响应...'}</p>
                     )}
                     {logs.map((l, i) => (
                       <p
                         key={i}
                         className={cn(
                           'whitespace-pre-wrap break-all',
-                          l.stderr ? 'text-amber-400/80' : 'text-emerald-400/80'
+                          l.stderr ? 'text-amber-400' : 'text-emerald-400'
                         )}
                       >
                         {l.text}
                       </p>
                     ))}
-                    {loading && statusLine && (
-                      <p className="mt-1 animate-pulse text-brand/70">{statusLine}</p>
+                    {loading && statusLine && logs.length > 0 && (
+                      <p className="mt-1 animate-pulse text-slate-400">{statusLine}</p>
                     )}
                   </div>
                 </div>
@@ -271,14 +293,35 @@ export function NewAnalysis() {
                 <p className="mt-3 text-xs font-medium text-brand/80">将归档到「{preName}」名下</p>
               )}
 
+              <div className="mt-5">
+                <Label className="text-sm font-semibold text-fg">调用的模型</Label>
+                <Select value={model} onValueChange={setModel}>
+                  <SelectTrigger className="mt-2 rounded-xl border-line/40 bg-card2/30 transition-all hover:bg-card2/50 focus:ring-brand/20">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="sonnet">Sonnet（均衡·推荐）</SelectItem>
+                    <SelectItem value="opus">Opus（最高质量）</SelectItem>
+                    <SelectItem value="haiku">Haiku（最快）</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+
               <Button
                 className="group relative mt-8 w-full overflow-hidden rounded-xl bg-brand py-6 text-base font-bold text-white shadow-lg shadow-brand/20 transition-all hover:-translate-y-0.5 hover:bg-brand/90 hover:shadow-xl hover:shadow-brand/30 disabled:opacity-90"
                 onClick={generateFromMessage}
                 disabled={loading}
               >
+                <div 
+                  className={cn(
+                    "absolute inset-y-0 left-0 bg-white/20 transition-all duration-300 ease-out",
+                    loading || progress > 0 ? "opacity-100" : "opacity-0"
+                  )}
+                  style={{ width: `${progress}%` }} 
+                />
                 <span className="relative z-10 flex items-center justify-center drop-shadow-sm">
                   {loading ? (
-                    <><Loader2 className="mr-2 size-5 animate-spin" /> Agent 分析中...</>
+                    <><Loader2 className="mr-2 size-5 animate-spin" /> Agent 分析中 ({Math.round(progress)}%)…</>
                   ) : (
                     <><FileSearch className="mr-2 size-5 transition-transform group-hover:scale-110" /> 生成报告</>
                   )}

@@ -1,9 +1,6 @@
 import express from 'express'
 import cors from 'cors'
 import { spawn } from 'child_process'
-import { readFileSync } from 'fs'
-import { resolve } from 'path'
-import { homedir } from 'os'
 
 const app = express()
 const PORT = process.env.PORT || 3001
@@ -11,36 +8,59 @@ const PORT = process.env.PORT || 3001
 app.use(cors())
 app.use(express.json({ limit: '5mb' }))
 
-const SKILL_PATH = resolve(homedir(), '.claude/skills/customer-intent-analyzer/SKILL.md')
-let SKILL_PROMPT = ''
+const SYSTEM_PROMPT = `你是客户意图分析专家，专为 AI/知识付费教学场景做客户咨询消息分析。
 
-try {
-  SKILL_PROMPT = readFileSync(SKILL_PATH, 'utf-8')
-  console.log(`📖 已加载 skill: ${SKILL_PATH}`)
-} catch {
-  console.warn('⚠️  SKILL.md 未找到，使用内置回退 prompt')
-  SKILL_PROMPT = `你是客户意图分析专家。请分析客户消息并输出 JSON 格式的 IntentReport。`
-}
+分析心法：
+1. 去噪翻译：剥掉口语化的口水词、重复、语气词，留下事实和诉求核心。
+2. 分清说出来的和没说出来的：客户表面说的话往往不是他真正想要的，要从话里读出他没有直接表达的动机——他在担心什么、他真正要验证什么、他卡在哪一步。
+3. 判断他此刻最需要你给什么：不是长篇大论，而是一个让他敢迈出下一步的具体规划。
+
+stage 成交阶段判断依据：
+- 观望咨询：初次接触、泛泛问"你教什么""怎么收费"，没有明确付费意向。
+- 比较犹豫：有付费意愿但不确定值不值、怕踩坑，或正在对比多家。
+- 准备成交：提出了具体的上课/购买意向，在评估可行性而非价值。
+- 已付费推进：已经付款，进入交付/学习阶段，需要推进进度和巩固信任。
+- 复购续费：现有学员或老客户，需要续费/复购的推进。
+
+brandColor 选取规则：聊小红书的内容→#FF2442（小红书红）；聊抖音→#000000或#00f2ea；无明显平台→#0A84FF（科技蓝）。`
 
 function buildPrompt(message: string): string {
-  return `${SKILL_PROMPT}
+  return `${SYSTEM_PROMPT}
 
----
+请直接输出以下 JSON 格式（不要输出任何其他文字，不要 HTML，不要把 JSON 包在 markdown 里）：
 
-## 当前任务
+{
+  "title": "客户一句话主题",
+  "titleEn": "English Subtitle",
+  "brandColor": "#FF2442",
+  "quickRead": "把客户原话翻成人话的一句速读，简洁",
+  "intent": "他此刻最想拿到的具体东西",
+  "deepGoal": "深层目标（赚钱/提效/转行/交差等）",
+  "evidence": "凭哪句话这么判断",
+  "closeProbability": 80,
+  "intentLevel": 4,
+  "stage": "比较犹豫",
+  "signals": [{"title":"积极信号", "detail":"具体说明"}],
+  "concerns": [{"title":"顾虑点", "detail":"具体说明"}],
+  "risk": "最大的丢单风险一句话",
+  "teaching": {
+    "framework": [{"title":"教学步骤", "detail":"内容说明"}],
+    "trialLesson": {"title":"第一节体验课主题", "points":["要点1","要点2"], "why":"为什么这么排"}
+  },
+  "actions": [{"title":"现在做的动作", "detail":"具体做法"}],
+  "followUp": "跟进节奏（具体时间节点和动作，不要空话）",
+  "script": ["话术1（先接住诉求，口语化）", "话术2（给具体可见的下一步）"]
+}
 
-用户发来了一段客户/学员的消息，请你直接输出 JSON 格式的 IntentReport。
-
-要求：
-1. **不要生成 HTML 报告**，只输出 JSON
-2. **不要输出任何 Markdown 说明文字**，只输出 JSON
-3. JSON 必须放在 \`\`\`json ... \`\`\` 代码块内
-4. 严格按上面 schema 填充每个字段
-5. stage 取值只能是：观望咨询 / 比较犹豫 / 准备成交 / 已付费推进 / 复购续费
-6. intentLevel 是 1-5 整数
-7. closeProbability 是 0-100 整数
-8. brandColor 按内容识别品牌色（聊小红书→#FF2442，无明显品牌→#0A84FF）
-9. 信息不足处的字段，诚实标注"信息不足"
+约束：
+- stage 只能选：观望咨询 / 比较犹豫 / 准备成交 / 已付费推进 / 复购续费
+- intentLevel 是 1-5 的整数
+- closeProbability 是 0-100 的整数
+- 每个 signals、concerns、framework、actions 至少 1 条
+- script 至少 2 条，用口语而不是销售腔
+- 没有足够信息判断的字段标注"信息不足"，不要编造
+- 不提供体验课时 trialLesson 可以省略
+- 输出纯 JSON，不要 \`\`\` 包裹
 
 客户消息：
 """
@@ -63,11 +83,14 @@ app.get('/api/health', (_req, res) => {
   res.json({ ok: true, claude: true })
 })
 
+const MODELS = ['sonnet', 'opus', 'haiku'] as const
+
 app.post('/api/analyze', (req, res) => {
-  const { message } = req.body
+  const { message, model } = req.body
   if (!message || typeof message !== 'string') {
     return res.status(400).json({ error: '请提供 message 字段' })
   }
+  const selectedModel = MODELS.includes(model) ? model : 'sonnet'
 
   // SSE
   res.writeHead(200, {
@@ -82,11 +105,11 @@ app.post('/api/analyze', (req, res) => {
   }
 
   const prompt = buildPrompt(message)
-  console.log('🤖 正在调用 Claude CLI 分析客户消息...')
+  console.log(`🤖 调用 Claude CLI → ${selectedModel}...`)
 
-  send('status', { msg: '🔧 正在启动本地 Agent...' })
+  send('status', { msg: `🔧 启动 ${selectedModel} 模型...` })
 
-  const child = spawn('claude', ['-p', '--bare', '--dangerously-skip-permissions'], {
+  const child = spawn('claude', ['-p', '--bare', '--dangerously-skip-permissions', '--model', selectedModel], {
     stdio: ['pipe', 'pipe', 'pipe'],
     env: { ...process.env, FORCE_COLOR: '0', NO_COLOR: '1' },
   })
